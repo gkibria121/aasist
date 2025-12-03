@@ -15,13 +15,13 @@ from importlib import import_module
 from pathlib import Path
 from shutil import copy
 from typing import Dict, List, Union
+import time
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
-from tqdm import tqdm
 
 from data_utils import (Dataset_ASVspoof2019_train,
                         Dataset_ASVspoof2019_devNeval, genSpoof_list)
@@ -139,13 +139,13 @@ def main(args: argparse.Namespace) -> None:
     metric_path = model_tag / "metrics"
     os.makedirs(metric_path, exist_ok=True)
 
-    # Training with progress bar
+    # Training loop
     print("\n" + "="*60)
     print("STARTING TRAINING")
     print("="*60 + "\n")
     
     for epoch in range(config["num_epochs"]):
-        print(f"\n{'='*60}")
+        print(f"{'='*60}")
         print(f"EPOCH {epoch+1}/{config['num_epochs']}")
         print(f"{'='*60}")
         
@@ -154,10 +154,7 @@ def main(args: argparse.Namespace) -> None:
                                    scheduler, config, epoch)
         
         # Validation
-        print(f"\n{'─'*60}")
-        print("Validating...")
-        print(f"{'─'*60}")
-        
+        print(f"\nValidating...")
         produce_evaluation_file(dev_loader, model, device,
                                 metric_path/"dev_score.txt", dev_trial_path)
         dev_eer, dev_tdcf, dev_acc_eer, dev_acc_tdcf, dev_max_acc = calculate_tDCF_EER(
@@ -166,15 +163,17 @@ def main(args: argparse.Namespace) -> None:
             output_file=metric_path/"dev_t-DCF_EER_{}epo.txt".format(epoch),
             printout=False)
         
-        print(f"\n📊 EPOCH {epoch+1} RESULTS:")
+        print(f"\n{'─'*60}")
+        print(f"EPOCH {epoch+1} RESULTS:")
         print(f"{'─'*60}")
-        print(f"Loss:            {running_loss:.5f}")
-        print(f"Dev EER:         {dev_eer:.3f}%")
-        print(f"Dev t-DCF:       {dev_tdcf:.5f}")
-        print(f"Dev Acc@EER:     {dev_acc_eer:.2f}%")
-        print(f"Dev Acc@min-tDCF:{dev_acc_tdcf:.2f}%")
-        print(f"Dev Max Acc:     {dev_max_acc:.2f}%")
-        print(f"{'─'*60}")
+        print(f"  Loss:              {running_loss:.5f}")
+        print(f"  Dev EER:           {dev_eer:.3f}%")
+        print(f"  Dev t-DCF:         {dev_tdcf:.5f}")
+        print(f"  Dev Acc@EER:       {dev_acc_eer:.2f}%")
+        print(f"  Dev Acc@min-tDCF:  {dev_acc_tdcf:.2f}%")
+        print(f"  Dev Max Acc:       {dev_max_acc:.2f}%")
+        print(f"  Best Dev EER:      {best_dev_eer:.3f}%")
+        print(f"{'─'*60}\n")
         
         writer.add_scalar("loss", running_loss, epoch)
         writer.add_scalar("dev_eer", dev_eer, epoch)
@@ -185,14 +184,14 @@ def main(args: argparse.Namespace) -> None:
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            print(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (prev: {best_dev_eer:.3f}%)")
+            print(f"🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)\n")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # Do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
-                print("\nEvaluating on eval set...")
+                print("Evaluating on eval set...")
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
                 eval_eer, eval_tdcf, eval_acc_eer, eval_acc_tdcf, eval_max_acc = calculate_tDCF_EER(
@@ -218,7 +217,7 @@ def main(args: argparse.Namespace) -> None:
                     print(log_text)
                     f_log.write(log_text + "\n")
 
-            print(f"Saving epoch {epoch} for SWA")
+            print(f"Saving epoch {epoch} for SWA\n")
             optimizer_swa.update_swa()
             n_swa_update += 1
         
@@ -261,11 +260,11 @@ def main(args: argparse.Namespace) -> None:
     print("\n" + "="*60)
     print("🎉 TRAINING COMPLETE!")
     print("="*60)
-    print(f"Best EER:                    {best_eval_eer:.3f}%")
-    print(f"Best t-DCF:                  {best_eval_tdcf:.5f}")
-    print(f"Final Accuracy @ EER:        {eval_acc_eer:.2f}%")
-    print(f"Final Accuracy @ min-tDCF:   {eval_acc_tdcf:.2f}%")
-    print(f"Final Maximum Accuracy:      {eval_max_acc:.2f}%")
+    print(f"  Best EER:                    {best_eval_eer:.3f}%")
+    print(f"  Best t-DCF:                  {best_eval_tdcf:.5f}")
+    print(f"  Final Accuracy @ EER:        {eval_acc_eer:.2f}%")
+    print(f"  Final Accuracy @ min-tDCF:   {eval_acc_tdcf:.2f}%")
+    print(f"  Final Maximum Accuracy:      {eval_max_acc:.2f}%")
     print("="*60 + "\n")
 
 
@@ -371,15 +370,24 @@ def produce_evaluation_file(
     fname_list = []
     score_list = []
     
-    # Single progress bar for evaluation
+    total_batches = len(data_loader)
+    print_every = max(1, total_batches // 10)  # Print 10 updates
+    
     with torch.no_grad():
-        for batch_x, utt_id in tqdm(data_loader, desc="Evaluating", ncols=80, leave=False):
+        for batch_idx, (batch_x, utt_id) in enumerate(data_loader):
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
             # Add outputs
             fname_list.extend(utt_id)
             score_list.extend(batch_score.tolist())
+            
+            # Print progress
+            if (batch_idx + 1) % print_every == 0 or (batch_idx + 1) == total_batches:
+                progress = (batch_idx + 1) / total_batches * 100
+                print(f"  Progress: {batch_idx+1}/{total_batches} ({progress:.1f}%)", end='\r')
+    
+    print()  # New line after progress
 
     assert len(trial_lines) == len(fname_list) == len(score_list)
     with open(save_path, "w") as fh:
@@ -387,7 +395,7 @@ def produce_evaluation_file(
             _, utt_id, _, src, key = trl.strip().split(' ')
             assert fn == utt_id
             fh.write("{} {} {} {}\n".format(utt_id, src, key, sco))
-    print("Scores saved to {}".format(save_path))
+    print(f"  Scores saved to {save_path}")
 
 
 def train_epoch(
@@ -407,10 +415,13 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    # Single progress bar for training batches
-    pbar = tqdm(trn_loader, desc="Training", ncols=100, leave=False)
+    total_batches = len(trn_loader)
+    print_every = max(1, total_batches // 20)  # Print 20 updates per epoch
+    start_time = time.time()
     
-    for batch_x, batch_y in pbar:
+    print(f"Training on {total_batches} batches...")
+    
+    for batch_idx, (batch_x, batch_y) in enumerate(trn_loader):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -431,11 +442,24 @@ def train_epoch(
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
         
-        # Update progress bar with running average loss
-        avg_loss = running_loss / num_total
-        pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
-
+        # Print progress
+        if (batch_idx + 1) % print_every == 0 or (batch_idx + 1) == total_batches:
+            avg_loss = running_loss / num_total
+            elapsed = time.time() - start_time
+            progress = (batch_idx + 1) / total_batches * 100
+            batches_per_sec = (batch_idx + 1) / elapsed
+            eta = (total_batches - batch_idx - 1) / batches_per_sec if batches_per_sec > 0 else 0
+            
+            print(f"  [{batch_idx+1}/{total_batches}] ({progress:.1f}%) | "
+                  f"Loss: {avg_loss:.4f} | "
+                  f"ETA: {eta:.0f}s", end='\r')
+    
+    print()  # New line after progress
     running_loss /= num_total
+    
+    elapsed_total = time.time() - start_time
+    print(f"Training completed in {elapsed_total:.1f}s | Avg Loss: {running_loss:.5f}")
+    
     return running_loss
 
 
