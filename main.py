@@ -21,6 +21,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
+from tqdm import tqdm
 
 from data_utils import (Dataset_ASVspoof2019_train,
                         Dataset_ASVspoof2019_devNeval, genSpoof_list)
@@ -126,11 +127,16 @@ def main(args: argparse.Namespace) -> None:
     metric_path = model_tag / "metrics"
     os.makedirs(metric_path, exist_ok=True)
 
-    # Training
-    for epoch in range(config["num_epochs"]):
-        print("Start training epoch{:03d}".format(epoch))
+    # Training with progress bar
+    epoch_pbar = tqdm(range(config["num_epochs"]), desc="Training Progress", position=0)
+    for epoch in epoch_pbar:
+        epoch_pbar.set_description(f"Epoch {epoch+1}/{config['num_epochs']}")
+        
         running_loss = train_epoch(trn_loader, model, optimizer, device,
-                                   scheduler, config)
+                                   scheduler, config, epoch)
+        
+        # Validation
+        tqdm.write(f"\n[Epoch {epoch}] Evaluating on dev set...")
         produce_evaluation_file(dev_loader, model, device,
                                 metric_path/"dev_score.txt", dev_trial_path)
         dev_eer, dev_tdcf = calculate_tDCF_EER(
@@ -138,21 +144,23 @@ def main(args: argparse.Namespace) -> None:
             asv_score_file=database_path/config["asv_score_path"],
             output_file=metric_path/"dev_t-DCF_EER_{}epo.txt".format(epoch),
             printout=False)
-        print("DONE.\nLoss:{:.5f}, dev_eer: {:.3f}, dev_tdcf:{:.5f}".format(
-            running_loss, dev_eer, dev_tdcf))
+        
+        tqdm.write(f"Loss: {running_loss:.5f} | Dev EER: {dev_eer:.3f}% | Dev t-DCF: {dev_tdcf:.5f}")
+        
         writer.add_scalar("loss", running_loss, epoch)
         writer.add_scalar("dev_eer", dev_eer, epoch)
         writer.add_scalar("dev_tdcf", dev_tdcf, epoch)
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            print("best model find at epoch", epoch)
+            tqdm.write(f"🎯 New best model at epoch {epoch}!")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
+                tqdm.write("Evaluating on eval set...")
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
                 eval_eer, eval_tdcf = calculate_tDCF_EER(
@@ -171,16 +179,26 @@ def main(args: argparse.Namespace) -> None:
                     torch.save(model.state_dict(),
                                model_save_path / "best.pth")
                 if len(log_text) > 0:
-                    print(log_text)
+                    tqdm.write(log_text)
                     f_log.write(log_text + "\n")
 
-            print("Saving epoch {} for swa".format(epoch))
+            tqdm.write(f"Saving epoch {epoch} for SWA")
             optimizer_swa.update_swa()
             n_swa_update += 1
+        
+        # Update progress bar with current metrics
+        epoch_pbar.set_postfix({
+            'loss': f'{running_loss:.4f}',
+            'dev_eer': f'{dev_eer:.3f}',
+            'best_eer': f'{best_dev_eer:.3f}'
+        })
+        
         writer.add_scalar("best_dev_eer", best_dev_eer, epoch)
         writer.add_scalar("best_dev_tdcf", best_dev_tdcf, epoch)
 
+    print("\n" + "="*50)
     print("Start final evaluation")
+    print("="*50)
     epoch += 1
     if n_swa_update > 0:
         optimizer_swa.swap_swa_sgd()
@@ -205,8 +223,10 @@ def main(args: argparse.Namespace) -> None:
         best_eval_tdcf = eval_tdcf
         torch.save(model.state_dict(),
                    model_save_path / "best.pth")
-    print("Exp FIN. EER: {:.3f}, min t-DCF: {:.5f}".format(
-        best_eval_eer, best_eval_tdcf))
+    print("="*50)
+    print(f"🎉 Training Complete!")
+    print(f"Best EER: {best_eval_eer:.3f}% | Best t-DCF: {best_eval_tdcf:.5f}")
+    print("="*50)
 
 
 def get_model(model_config: Dict, device: torch.device):
@@ -300,7 +320,10 @@ def produce_evaluation_file(
         trial_lines = f_trl.readlines()
     fname_list = []
     score_list = []
-    for batch_x, utt_id in data_loader:
+    
+    # Add progress bar for evaluation
+    eval_pbar = tqdm(data_loader, desc="Evaluating", leave=False)
+    for batch_x, utt_id in eval_pbar:
         batch_x = batch_x.to(device)
         with torch.no_grad():
             _, batch_out = model(batch_x)
@@ -324,20 +347,22 @@ def train_epoch(
     optim: Union[torch.optim.SGD, torch.optim.Adam],
     device: torch.device,
     scheduler: torch.optim.lr_scheduler,
-    config: argparse.Namespace):
+    config: argparse.Namespace,
+    epoch: int):
     """Train the model for one epoch"""
     running_loss = 0
     num_total = 0.0
-    ii = 0
     model.train()
 
     # set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    for batch_x, batch_y in trn_loader:
+    
+    # Add progress bar for training batches
+    train_pbar = tqdm(trn_loader, desc=f"Training", leave=False)
+    for batch_x, batch_y in train_pbar:
         batch_size = batch_x.size(0)
         num_total += batch_size
-        ii += 1
         batch_x = batch_x.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
         _, batch_out = model(batch_x, Freq_aug=str_to_bool(config["freq_aug"]))
@@ -353,6 +378,9 @@ def train_epoch(
             pass
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
+        
+        # Update progress bar with current loss
+        train_pbar.set_postfix({'loss': f'{batch_loss.item():.4f}'})
 
     running_loss /= num_total
     return running_loss
