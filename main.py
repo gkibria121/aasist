@@ -92,6 +92,7 @@ def main(args: argparse.Namespace) -> None:
     
     # Enable cuDNN autotuner - finds fastest convolution algorithms
     torch.backends.cudnn.benchmark = True 
+    torch.backends.cudnn.deterministic = False
     print("="*60 + "\n")
     # ============================================================
 
