@@ -37,6 +37,9 @@ def main(args: argparse.Namespace) -> None:
     Main function.
     Trains, validates, and evaluates the ASVspoof detection model.
     """
+    # Start timing
+    total_start_time = time.time()
+    
     # Load experiment configurations
     with open(args.config, "r") as f_json:
         config = json.loads(f_json.read())
@@ -140,19 +143,31 @@ def main(args: argparse.Namespace) -> None:
     # Training loop
     print("\n" + "="*60)
     print("STARTING TRAINING")
+    print(f"Epochs: {config['num_epochs']}")
     print("="*60 + "\n")
     
-    # Main epoch progress bar - use tqdm directly
-    epoch_pbar = tqdm(range(config["num_epochs"]), desc="Training Progress")
-    
-    for epoch in epoch_pbar:
+    for epoch in range(config["num_epochs"]):
         epoch_start_time = time.time()
         
-        # Train for one epoch - NO nested progress bar
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch+1}/{config['num_epochs']}")
+        print(f"{'='*60}")
+        
+        # ========== TRAIN PHASE ==========
+        print("\n🚀 Training...")
+        train_start_time = time.time()
         running_loss = train_epoch(trn_loader, model, optimizer, device,
                                    scheduler, config, epoch)
+        train_time = time.time() - train_start_time
         
-        # Validation
+        print(f"   ✓ Training completed in {train_time:.1f}s")
+        print(f"   📊 Training Loss: {running_loss:.4f}")
+        
+        # ========== VALIDATION PHASE ==========
+        print("\n📊 Validating...")
+        val_start_time = time.time()
+        
+        # Perform full validation
         produce_evaluation_file(dev_loader, model, device,
                                 metric_path/"dev_score.txt", dev_trial_path)
         dev_eer, dev_tdcf, dev_acc_eer, dev_acc_tdcf, dev_max_acc = calculate_tDCF_EER(
@@ -161,15 +176,17 @@ def main(args: argparse.Namespace) -> None:
             output_file=metric_path/"dev_t-DCF_EER_{}epo.txt".format(epoch),
             printout=False)
         
+        val_time = time.time() - val_start_time
         epoch_time = time.time() - epoch_start_time
         
-        # Update epoch progress bar with metrics
-        epoch_pbar.set_postfix({
-            'Loss': f'{running_loss:.4f}',
-            'EER': f'{dev_eer:.2f}%',
-            't-DCF': f'{dev_tdcf:.4f}',
-            'Time': f'{epoch_time:.1f}s'
-        })
+        print(f"   ✓ Validation completed in {val_time:.1f}s")
+        print(f"\n📈 Epoch {epoch+1} Summary:")
+        print(f"   EER:        {dev_eer:.3f}%")
+        print(f"   t-DCF:      {dev_tdcf:.5f}")
+        print(f"   Acc@EER:    {dev_acc_eer:.2f}%")
+        print(f"   Acc@t-DCF:  {dev_acc_tdcf:.2f}%")
+        print(f"   Max Acc:    {dev_max_acc:.2f}%")
+        print(f"   Total Time: {epoch_time:.1f}s")
         
         writer.add_scalar("loss", running_loss, epoch)
         writer.add_scalar("dev_eer", dev_eer, epoch)
@@ -180,14 +197,15 @@ def main(args: argparse.Namespace) -> None:
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            print(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)")
+            print(f"\n🎯 NEW BEST MODEL! EER improved from {best_dev_eer:.3f}% to {dev_eer:.3f}%")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # Do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
-                print("Evaluating on eval set...")
+                print("   🔍 Evaluating on eval set...")
+                eval_start_time = time.time()
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
                 eval_eer, eval_tdcf, eval_acc_eer, eval_acc_tdcf, eval_max_acc = calculate_tDCF_EER(
@@ -196,52 +214,59 @@ def main(args: argparse.Namespace) -> None:
                     output_file=metric_path /
                     "t-DCF_EER_{:03d}epo.txt".format(epoch))
 
-                log_text = "epoch{:03d}, ".format(epoch)
+                eval_time = time.time() - eval_start_time
+                
+                log_text = f"   📊 Eval Results: EER={eval_eer:.3f}%, t-DCF={eval_tdcf:.5f}"
                 if eval_eer < best_eval_eer:
-                    log_text += "best eer, {:.4f}%".format(eval_eer)
+                    log_text += f" (NEW BEST EER)"
                     best_eval_eer = eval_eer
                 if eval_tdcf < best_eval_tdcf:
-                    log_text += "best tdcf, {:.4f}".format(eval_tdcf)
+                    log_text += f" (NEW BEST t-DCF)"
                     best_eval_tdcf = eval_tdcf
                     torch.save(model.state_dict(),
                                model_save_path / "best.pth")
                 
-                log_text += f", acc@eer: {eval_acc_eer:.2f}%, acc@min-tDCF: {eval_acc_tdcf:.2f}%, max_acc: {eval_max_acc:.2f}%"
+                log_text += f"\n   🎯 Acc@EER: {eval_acc_eer:.2f}%, Acc@min-tDCF: {eval_acc_tdcf:.2f}%, Max Acc: {eval_max_acc:.2f}%"
+                log_text += f"\n   ⏱️  Eval Time: {eval_time:.1f}s"
                 
-                if len(log_text) > 0:
-                    print(log_text)
-                    f_log.write(log_text + "\n")
+                print(log_text)
+                f_log.write(f"epoch{epoch+1:03d}: {log_text}\n")
 
-            print(f"Saving epoch {epoch} for SWA")
+            print(f"   💾 Saving epoch {epoch+1} for SWA")
             optimizer_swa.update_swa()
             n_swa_update += 1
         
         writer.add_scalar("best_dev_eer", best_dev_eer, epoch)
         writer.add_scalar("best_dev_tdcf", best_dev_tdcf, epoch)
-
-    epoch_pbar.close()
+        
+        # Clear memory if needed
+        if device == "cuda":
+            torch.cuda.empty_cache()
     
     print("\n" + "="*60)
     print("🎯 FINAL EVALUATION")
     print("="*60)
-    epoch += 1
+    
     if n_swa_update > 0:
-        print("Applying SWA (Stochastic Weight Averaging)...")
+        print("🔁 Applying SWA (Stochastic Weight Averaging)...")
         optimizer_swa.swap_swa_sgd()
         optimizer_swa.bn_update(trn_loader, model, device=device)
     
+    print("📊 Final evaluation on eval set...")
+    eval_start_time = time.time()
     produce_evaluation_file(eval_loader, model, device, eval_score_path,
                             eval_trial_path)
     eval_eer, eval_tdcf, eval_acc_eer, eval_acc_tdcf, eval_max_acc = calculate_tDCF_EER(
         cm_scores_file=eval_score_path,
         asv_score_file=database_path / config["asv_score_path"],
         output_file=model_tag / "t-DCF_EER.txt")
+    eval_time = time.time() - eval_start_time
     
     f_log = open(model_tag / "metric_log.txt", "a")
     f_log.write("=" * 5 + "\n")
-    f_log.write("EER: {:.3f}%, min t-DCF: {:.5f}\n".format(eval_eer, eval_tdcf))
-    f_log.write("Acc@EER: {:.2f}%, Acc@min-tDCF: {:.2f}%, Max Acc: {:.2f}%\n".format(
-        eval_acc_eer, eval_acc_tdcf, eval_max_acc))
+    f_log.write("FINAL RESULTS:\n")
+    f_log.write(f"EER: {eval_eer:.3f}%, min t-DCF: {eval_tdcf:.5f}\n")
+    f_log.write(f"Acc@EER: {eval_acc_eer:.2f}%, Acc@min-tDCF: {eval_acc_tdcf:.2f}%, Max Acc: {eval_max_acc:.2f}%\n")
     f_log.close()
 
     torch.save(model.state_dict(),
@@ -254,6 +279,7 @@ def main(args: argparse.Namespace) -> None:
         torch.save(model.state_dict(),
                    model_save_path / "best.pth")
     
+    total_time = time.time() - total_start_time
     print("\n" + "="*60)
     print("🎉 TRAINING COMPLETE!")
     print("="*60)
@@ -262,6 +288,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Final Accuracy @ EER:        {eval_acc_eer:.2f}%")
     print(f"  Final Accuracy @ min-tDCF:   {eval_acc_tdcf:.2f}%")
     print(f"  Final Maximum Accuracy:      {eval_max_acc:.2f}%")
+    print(f"  Total Training Time:         {total_time:.1f}s")
     print("="*60 + "\n")
 
 
@@ -362,13 +389,19 @@ def produce_evaluation_file(
     fname_list = []
     score_list = []
     
+    # Add progress bar for evaluation
+    pbar = tqdm(data_loader, desc="Evaluating", leave=False)
+    
     with torch.no_grad():
-        for batch_x, utt_id in data_loader:
+        for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
             fname_list.extend(utt_id)
             score_list.extend(batch_score.tolist())
+            
+            # Update progress
+            pbar.set_postfix({'samples': len(fname_list)})
 
     assert len(trial_lines) == len(fname_list) == len(score_list)
     with open(save_path, "w") as fh:
@@ -386,7 +419,7 @@ def train_epoch(
     scheduler: torch.optim.lr_scheduler,
     config: argparse.Namespace,
     epoch: int):
-    """Train the model for one epoch - NO PROGRESS BAR HERE!"""
+    """Train the model for one epoch with progress bar"""
     running_loss = 0
     num_total = 0.0
     model.train()
@@ -395,8 +428,10 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    # NO tqdm progress bar here - just a simple loop
-    for batch_idx, (batch_x, batch_y) in enumerate(trn_loader):
+    # Training progress bar
+    train_pbar = tqdm(trn_loader, desc="Training", leave=False)
+    
+    for batch_idx, (batch_x, batch_y) in enumerate(train_pbar):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -417,6 +452,13 @@ def train_epoch(
             pass
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
+        
+        # Update progress bar
+        current_loss = running_loss / num_total
+        train_pbar.set_postfix({
+            'loss': f'{current_loss:.4f}',
+            'lr': f'{optim.param_groups[0]["lr"]:.6f}' if optim.param_groups[0].get("lr") else 'N/A'
+        })
     
     running_loss /= num_total
     
