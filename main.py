@@ -19,6 +19,8 @@ import time
 import numpy as np
 from collections import Counter, defaultdict
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
@@ -71,7 +73,11 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
         print(f"{exists} {name}: {path}")
         if path.exists():
             try:
-                num_files = len(list(path.rglob("*.flac"))) + len(list(path.rglob("*.wav")))
+                # Count audio files with various extensions
+                audio_extensions = ['*.flac', '*.wav', '*.mp3']
+                num_files = 0
+                for ext in audio_extensions:
+                    num_files += len(list(path.rglob(ext)))
                 print(f"   Audio files: {num_files}")
             except:
                 print("   Unable to count files")
@@ -110,13 +116,13 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
         print(f"   Bonafide samples: {stats_dict['bonafide_count']} ({stats_dict['bonafide_percentage']:.1f}%)")
         print(f"   Spoof samples: {stats_dict['spoof_count']} ({stats_dict['spoof_percentage']:.1f}%)")
         
-        if 'spoof_attacks' in stats_dict:
+        if 'spoof_attacks' in stats_dict and stats_dict['spoof_attacks']:
             print(f"   Spoof attack types: {len(stats_dict['spoof_attacks'])}")
             print("   Attack type distribution:")
             for attack_type, count in stats_dict['spoof_attacks'].most_common(5):
                 print(f"      {attack_type}: {count} samples")
         
-        if 'audio_duration_stats' in stats_dict:
+        if 'audio_duration_stats' in stats_dict and stats_dict['audio_duration_stats']:
             dur_stats = stats_dict['audio_duration_stats']
             print(f"   Audio duration (estimated):")
             print(f"      Min: {dur_stats['min']:.2f}s")
@@ -124,7 +130,7 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
             print(f"      Mean: {dur_stats['mean']:.2f}s")
             print(f"      Std: {dur_stats['std']:.2f}s")
         
-        if stats_dict['missing_files'] > 0:
+        if 'missing_files' in stats_dict and stats_dict['missing_files'] > 0:
             print(f"   ⚠️  Missing audio files: {stats_dict['missing_files']}")
     
     # Cross-set analysis
@@ -133,9 +139,9 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
     
     # Check for overlap between sets
     if all(set_name in all_stats for set_name in ['train', 'dev', 'eval']):
-        train_speakers = set(all_stats['train']['speakers'])
-        dev_speakers = set(all_stats['dev']['speakers'])
-        eval_speakers = set(all_stats['eval']['speakers'])
+        train_speakers = set(all_stats['train']['speakers']) if 'speakers' in all_stats['train'] else set()
+        dev_speakers = set(all_stats['dev']['speakers']) if 'speakers' in all_stats['dev'] else set()
+        eval_speakers = set(all_stats['eval']['speakers']) if 'speakers' in all_stats['eval'] else set()
         
         train_dev_overlap = train_speakers.intersection(dev_speakers)
         train_eval_overlap = train_speakers.intersection(eval_speakers)
@@ -175,8 +181,8 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
     print("\n⚖️  CLASS IMBALANCE ANALYSIS:")
     print("-" * 50)
     
-    total_bonafide = sum(stats['bonafide_count'] for stats in all_stats.values())
-    total_spoof = sum(stats['spoof_count'] for stats in all_stats.values())
+    total_bonafide = sum(stats.get('bonafide_count', 0) for stats in all_stats.values())
+    total_spoof = sum(stats.get('spoof_count', 0) for stats in all_stats.values())
     total_samples = total_bonafide + total_spoof
     
     if total_samples > 0:
@@ -184,11 +190,14 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
         print(f"   Bonafide: {total_bonafide} ({total_bonafide/total_samples*100:.1f}%)")
         print(f"   Spoof: {total_spoof} ({total_spoof/total_samples*100:.1f}%)")
         
-        imbalance_ratio = max(total_bonafide, total_spoof) / min(total_bonafide, total_spoof)
-        print(f"   Class imbalance ratio: {imbalance_ratio:.2f}:1")
-        
-        if imbalance_ratio > 2:
-            print(f"   ⚠️  Significant class imbalance detected!")
+        if total_bonafide > 0 and total_spoof > 0:
+            imbalance_ratio = max(total_bonafide, total_spoof) / min(total_bonafide, total_spoof)
+            print(f"   Class imbalance ratio: {imbalance_ratio:.2f}:1")
+            
+            if imbalance_ratio > 2:
+                print(f"   ⚠️  Significant class imbalance detected!")
+        else:
+            print(f"   ⚠️  One class has zero samples!")
     
     # Training set specific analysis
     if 'train' in all_stats:
@@ -232,20 +241,28 @@ def analyze_database(config: Dict, database_path: Path, track: str) -> None:
     
     # Check class balance
     if 'train' in all_stats:
-        train_imbalance = all_stats['train']['bonafide_count'] / max(all_stats['train']['spoof_count'], 1)
-        if train_imbalance > 2 or train_imbalance < 0.5:
-            recommendations.append("Consider using class weights in loss function due to class imbalance")
+        train_bonafide = all_stats['train'].get('bonafide_count', 0)
+        train_spoof = all_stats['train'].get('spoof_count', 0)
+        if train_spoof > 0:
+            train_imbalance = train_bonafide / train_spoof
+            if train_imbalance > 2 or train_imbalance < 0.5:
+                recommendations.append("Consider using class weights in loss function due to class imbalance")
     
     # Check dataset sizes
     if 'train' in all_stats and 'dev' in all_stats:
-        train_size = all_stats['train']['total_samples']
-        dev_size = all_stats['dev']['total_samples']
-        if dev_size / train_size < 0.1:
+        train_size = all_stats['train'].get('total_samples', 0)
+        dev_size = all_stats['dev'].get('total_samples', 0)
+        if train_size > 0 and dev_size / train_size < 0.1:
             recommendations.append(f"Development set is small ({dev_size/train_size*100:.1f}% of training). Consider using cross-validation.")
     
     # Check augmentation
     if not freq_aug:
         recommendations.append("Consider enabling frequency augmentation for better generalization")
+    
+    # Check for missing files
+    total_missing = sum(stats.get('missing_files', 0) for stats in all_stats.values())
+    if total_missing > 0:
+        recommendations.append(f"Found {total_missing} missing audio files. Verify dataset integrity.")
     
     if not recommendations:
         recommendations.append("Dataset looks well-balanced and configured for training.")
@@ -272,8 +289,12 @@ def analyze_protocol_file(protocol_path: Path, split_name: str, track: str) -> D
         'missing_files': 0
     }
     
-    with open(protocol_path, 'r') as f:
-        lines = f.readlines()
+    try:
+        with open(protocol_path, 'r') as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        print(f"⚠️  Protocol file not found: {protocol_path}")
+        return stats
     
     stats['total_samples'] = len(lines)
     
@@ -294,12 +315,28 @@ def analyze_protocol_file(protocol_path: Path, split_name: str, track: str) -> D
                 stats['spoof_count'] += 1
                 # Extract attack type (for LA track)
                 if track == 'LA' and '-' in utterance_id:
-                    attack_type = utterance_id.split('-')[1]
-                    stats['spoof_attacks'][attack_type] += 1
+                    try:
+                        attack_type = utterance_id.split('-')[1]
+                        stats['spoof_attacks'][attack_type] += 1
+                    except:
+                        stats['spoof_attacks']['unknown'] += 1
                 elif track == 'PA':
                     # PA track attack types
                     if 'replay' in label.lower():
                         stats['spoof_attacks']['replay'] += 1
+        elif len(parts) == 3:
+            # Alternative format for eval sets
+            speaker_id = parts[0]
+            utterance_id = parts[1]
+            label = parts[2]
+            
+            stats['speakers'].append(speaker_id)
+            stats['utterances'].append(utterance_id)
+            
+            if label == 'bonafide':
+                stats['bonafide_count'] += 1
+            elif label == 'spoof':
+                stats['spoof_count'] += 1
     
     if stats['total_samples'] > 0:
         stats['bonafide_percentage'] = (stats['bonafide_count'] / stats['total_samples']) * 100
@@ -312,8 +349,6 @@ def analyze_protocol_file(protocol_path: Path, split_name: str, track: str) -> D
 
 def analyze_audio_files(audio_dir: Path, utterance_ids: List[str]) -> Dict:
     """Analyze audio files and extract duration information."""
-    import librosa
-    
     stats = {
         'audio_duration_stats': None,
         'sample_rates': set(),
@@ -321,13 +356,23 @@ def analyze_audio_files(audio_dir: Path, utterance_ids: List[str]) -> Dict:
         'missing_files': 0
     }
     
+    # Check if librosa is available
+    try:
+        import librosa
+        librosa_available = True
+    except ImportError:
+        print("   ⚠️  librosa not available, skipping audio duration analysis")
+        return stats
+    
     durations = []
     
     # Check first N files to get statistics
     max_files_to_check = min(100, len(utterance_ids))
     sample_utterances = utterance_ids[:max_files_to_check]
     
-    for utt_id in tqdm(sample_utterances, desc=f"Checking audio files", leave=False):
+    print(f"   Checking {len(sample_utterances)} audio files for duration...")
+    
+    for utt_id in tqdm(sample_utterances, desc=f"   Checking audio", leave=False):
         # Try different file extensions
         audio_file = None
         for ext in ['.flac', '.wav']:
@@ -338,7 +383,7 @@ def analyze_audio_files(audio_dir: Path, utterance_ids: List[str]) -> Dict:
         
         if audio_file and audio_file.exists():
             try:
-                # Load audio to get duration
+                # Load audio to get duration (only load first 30 seconds to save time)
                 y, sr = librosa.load(audio_file, sr=None, mono=True, duration=30)
                 duration = librosa.get_duration(y=y, sr=sr)
                 durations.append(duration)
@@ -367,11 +412,17 @@ def generate_visualizations(all_stats: Dict, track: str) -> None:
     output_dir.mkdir(exist_ok=True)
     
     # 1. Class distribution across splits
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    splits_with_data = [name for name, stats in all_stats.items() 
+                       if 'bonafide_count' in stats and 'spoof_count' in stats]
     
-    for idx, (split_name, stats) in enumerate(all_stats.items()):
-        if 'bonafide_count' in stats and 'spoof_count' in stats:
-            ax = axes[idx]
+    if len(splits_with_data) > 0:
+        fig, axes = plt.subplots(1, min(3, len(splits_with_data)), figsize=(15, 5))
+        if len(splits_with_data) == 1:
+            axes = [axes]
+        
+        for idx, split_name in enumerate(splits_with_data[:3]):
+            stats = all_stats[split_name]
+            ax = axes[idx] if len(splits_with_data) > 1 else axes
             labels = ['Bonafide', 'Spoof']
             counts = [stats['bonafide_count'], stats['spoof_count']]
             
@@ -386,10 +437,10 @@ def generate_visualizations(all_stats: Dict, track: str) -> None:
                 ax.text(bar.get_x() + bar.get_width()/2., height,
                        f'{count}\n({count/sum(counts)*100:.1f}%)',
                        ha='center', va='bottom')
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / f'{track}_class_distribution.png', dpi=150, bbox_inches='tight')
-    plt.close()
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / f'{track}_class_distribution.png', dpi=150, bbox_inches='tight')
+        plt.close()
     
     # 2. Attack type distribution (for LA track)
     if track == 'LA' and 'train' in all_stats:
@@ -466,8 +517,9 @@ def generate_visualizations(all_stats: Dict, track: str) -> None:
         
         csv_data.append(row)
     
-    df = pd.DataFrame(csv_data)
-    df.to_csv(output_dir / f'{track}_dataset_statistics.csv', index=False)
+    if csv_data:
+        df = pd.DataFrame(csv_data)
+        df.to_csv(output_dir / f'{track}_dataset_statistics.csv', index=False)
     
     # Create a summary text file
     with open(output_dir / f'{track}_analysis_summary.txt', 'w') as f:
@@ -482,7 +534,7 @@ def generate_visualizations(all_stats: Dict, track: str) -> None:
             f.write(f"  Unique speakers: {len(stats.get('speakers', []))}\n")
             f.write(f"  Missing audio files: {stats.get('missing_files', 0)}\n")
             
-            if 'audio_duration_stats' in stats:
+            if 'audio_duration_stats' in stats and stats['audio_duration_stats']:
                 dur_stats = stats['audio_duration_stats']
                 f.write("  Duration statistics:\n")
                 f.write(f"    Min: {dur_stats.get('min', 0):.2f}s\n")
@@ -977,4 +1029,8 @@ if __name__ == "__main__":
                         help="continue training after database analysis")
     # =================================================
     
-    main(parser.parse_args())
+    # Parse arguments
+    args = parser.parse_args()
+    
+    # Call main function with parsed arguments
+    main(args)
