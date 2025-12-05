@@ -388,7 +388,11 @@ def produce_evaluation_file(
     
     # Use tqdm for evaluation progress - single bar, no nesting
     with torch.no_grad():
-        pbar = tqdm(data_loader, desc="  Evaluating", leave=False)
+        pbar = tqdm(data_loader, 
+                   desc="  Evaluating", 
+                   leave=False,
+                   mininterval=0.5,
+                   miniters=10)
         for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
@@ -427,7 +431,9 @@ def train_epoch(
     pbar = tqdm(trn_loader, 
                 desc=f"  Training",
                 leave=False,
-                dynamic_ncols=True)
+                dynamic_ncols=True,
+                mininterval=0.5,  # Update display at most every 0.5 seconds
+                miniters=10)  # Update at least every 10 iterations
     
     for batch_idx, (batch_x, batch_y) in enumerate(pbar):
         batch_size = batch_x.size(0)
@@ -453,13 +459,14 @@ def train_epoch(
         # Calculate current average loss
         avg_loss = running_loss / num_total
         
-        # Update progress bar postfix
-        postfix_dict = {"Loss": f"{avg_loss:.4f}"}
-        if scheduler is not None and hasattr(scheduler, 'get_last_lr'):
-            current_lr = scheduler.get_last_lr()[0]
-            postfix_dict["LR"] = f"{current_lr:.2e}"
-        
-        pbar.set_postfix(postfix_dict)
+        # Update progress bar postfix - only update every 10 batches to reduce refresh
+        if batch_idx % 10 == 0 or batch_idx == len(trn_loader) - 1:
+            postfix_dict = {"Loss": f"{avg_loss:.4f}"}
+            if scheduler is not None and hasattr(scheduler, 'get_last_lr'):
+                current_lr = scheduler.get_last_lr()[0]
+                postfix_dict["LR"] = f"{current_lr:.2e}"
+            
+            pbar.set_postfix(postfix_dict, refresh=True)
     
     pbar.close()
     running_loss /= num_total
