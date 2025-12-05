@@ -22,6 +22,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
+from tqdm.notebook import tqdm
 
 from data_utils import (Dataset_ASVspoof2019_train,
                         Dataset_ASVspoof2019_devNeval, genSpoof_list)
@@ -141,18 +142,17 @@ def main(args: argparse.Namespace) -> None:
     print("STARTING TRAINING")
     print("="*60 + "\n")
     
-    for epoch in range(config["num_epochs"]):
+    # Main epoch progress bar
+    epoch_pbar = tqdm(range(config["num_epochs"]), desc="Training Progress", position=0)
+    
+    for epoch in epoch_pbar:
         epoch_start_time = time.time()
-        
-        print(f"📊 Epoch {epoch+1}/{config['num_epochs']}")
         
         # Train for one epoch
         running_loss = train_epoch(trn_loader, model, optimizer, device,
                                    scheduler, config, epoch)
         
         # Validation
-        print(f"\n{'─'*60}")
-        print(f"🔍 Validating epoch {epoch+1}...")
         produce_evaluation_file(dev_loader, model, device,
                                 metric_path/"dev_score.txt", dev_trial_path)
         dev_eer, dev_tdcf, dev_acc_eer, dev_acc_tdcf, dev_max_acc = calculate_tDCF_EER(
@@ -163,18 +163,13 @@ def main(args: argparse.Namespace) -> None:
         
         epoch_time = time.time() - epoch_start_time
         
-        # Print epoch results
-        print(f"\n{'─'*60}")
-        print(f"📈 EPOCH {epoch+1} RESULTS (Time: {epoch_time:.1f}s):")
-        print(f"{'─'*60}")
-        print(f"  Loss:              {running_loss:.5f}")
-        print(f"  Dev EER:           {dev_eer:.3f}%")
-        print(f"  Dev t-DCF:         {dev_tdcf:.5f}")
-        print(f"  Dev Acc@EER:       {dev_acc_eer:.2f}%")
-        print(f"  Dev Acc@min-tDCF:  {dev_acc_tdcf:.2f}%")
-        print(f"  Dev Max Acc:       {dev_max_acc:.2f}%")
-        print(f"  Best Dev EER:      {best_dev_eer:.3f}%")
-        print(f"{'─'*60}")
+        # Update epoch progress bar with metrics
+        epoch_pbar.set_postfix({
+            'Loss': f'{running_loss:.4f}',
+            'EER': f'{dev_eer:.2f}%',
+            't-DCF': f'{dev_tdcf:.4f}',
+            'Time': f'{epoch_time:.1f}s'
+        })
         
         writer.add_scalar("loss", running_loss, epoch)
         writer.add_scalar("dev_eer", dev_eer, epoch)
@@ -185,14 +180,14 @@ def main(args: argparse.Namespace) -> None:
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            print(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)")
+            tqdm.write(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # Do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
-                print("Evaluating on eval set...")
+                tqdm.write("Evaluating on eval set...")
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
                 eval_eer, eval_tdcf, eval_acc_eer, eval_acc_tdcf, eval_max_acc = calculate_tDCF_EER(
@@ -214,18 +209,17 @@ def main(args: argparse.Namespace) -> None:
                 log_text += f", acc@eer: {eval_acc_eer:.2f}%, acc@min-tDCF: {eval_acc_tdcf:.2f}%, max_acc: {eval_max_acc:.2f}%"
                 
                 if len(log_text) > 0:
-                    print(log_text)
+                    tqdm.write(log_text)
                     f_log.write(log_text + "\n")
 
-            print(f"Saving epoch {epoch} for SWA")
+            tqdm.write(f"Saving epoch {epoch} for SWA")
             optimizer_swa.update_swa()
             n_swa_update += 1
         
         writer.add_scalar("best_dev_eer", best_dev_eer, epoch)
         writer.add_scalar("best_dev_tdcf", best_dev_tdcf, epoch)
-        
-        print()  # Add spacing between epochs
 
+    epoch_pbar.close()
     
     print("\n" + "="*60)
     print("🎯 FINAL EVALUATION")
@@ -369,7 +363,9 @@ def produce_evaluation_file(
     score_list = []
     
     with torch.no_grad():
-        for batch_x, utt_id in data_loader:
+        # Add progress bar for evaluation
+        pbar = tqdm(data_loader, desc="Evaluating", leave=False, position=1)
+        for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
@@ -382,7 +378,6 @@ def produce_evaluation_file(
             _, utt_id, _, src, key = trl.strip().split(' ')
             assert fn == utt_id
             fh.write("{} {} {} {}\n".format(utt_id, src, key, sco))
-    print(f"  ✅ Scores saved to {save_path}")
 
 
 def train_epoch(
@@ -402,9 +397,10 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    print(f"  🏃 Training Epoch {epoch+1}...")
+    # Add progress bar for training batches
+    pbar = tqdm(trn_loader, desc=f"Epoch {epoch+1}", leave=False, position=1)
     
-    for batch_idx, (batch_x, batch_y) in enumerate(trn_loader):
+    for batch_idx, (batch_x, batch_y) in enumerate(pbar):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -414,6 +410,7 @@ def train_epoch(
         _, batch_out = model(batch_x, Freq_aug=str_to_bool(config["freq_aug"]))
         batch_loss = criterion(batch_out, batch_y)
         running_loss += batch_loss.item() * batch_size
+        
         optim.zero_grad()
         batch_loss.backward()
         optim.step()
@@ -424,6 +421,10 @@ def train_epoch(
             pass
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
+        
+        # Update progress bar with current loss
+        current_loss = running_loss / num_total
+        pbar.set_postfix({'loss': f'{current_loss:.4f}'})
     
     running_loss /= num_total
     
