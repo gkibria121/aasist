@@ -28,8 +28,13 @@ from data_utils import (Dataset_ASVspoof2019_train,
 from evaluation import calculate_tDCF_EER
 from utils import create_optimizer, seed_worker, set_seed, str_to_bool
 
-# Add tqdm for progress bars - use auto for best compatibility
-from tqdm.auto import tqdm
+# Add tqdm for progress bars - use notebook for better Jupyter/Colab visualization
+try:
+    from tqdm.notebook import tqdm
+    print("Using tqdm.notebook for enhanced progress bars")
+except ImportError:
+    from tqdm import tqdm
+    print("Using standard tqdm (notebook version not available)")
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -144,17 +149,18 @@ def main(args: argparse.Namespace) -> None:
     print("STARTING TRAINING")
     print("="*60 + "\n")
     
-    # Create master progress bar for epochs - this stays visible
+    # Create master progress bar for epochs - use notebook style
     epoch_pbar = tqdm(total=config["num_epochs"], 
-                      desc="Training Progress",
+                      desc="📊 Training Progress",
                       position=0,
-                      leave=True)
+                      leave=True,
+                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]')
     
     for epoch in range(config["num_epochs"]):
         epoch_start_time = time.time()
         
         # Update epoch progress bar description
-        epoch_pbar.set_description(f"Epoch {epoch+1}/{config['num_epochs']}")
+        epoch_pbar.set_description(f"📊 Epoch {epoch+1}/{config['num_epochs']}")
         
         # Train for one epoch (this will show its own progress bar)
         running_loss = train_epoch(trn_loader, model, optimizer, device,
@@ -162,7 +168,7 @@ def main(args: argparse.Namespace) -> None:
         
         # Validation
         print(f"\n{'─'*60}")
-        print(f"Validating epoch {epoch+1}...")
+        print(f"🔍 Validating epoch {epoch+1}...")
         produce_evaluation_file(dev_loader, model, device,
                                 metric_path/"dev_score.txt", dev_trial_path)
         dev_eer, dev_tdcf, dev_acc_eer, dev_acc_tdcf, dev_max_acc = calculate_tDCF_EER(
@@ -175,7 +181,7 @@ def main(args: argparse.Namespace) -> None:
         
         # Print epoch results
         print(f"\n{'─'*60}")
-        print(f"EPOCH {epoch+1} RESULTS (Time: {epoch_time:.1f}s):")
+        print(f"📈 EPOCH {epoch+1} RESULTS (Time: {epoch_time:.1f}s):")
         print(f"{'─'*60}")
         print(f"  Loss:              {running_loss:.5f}")
         print(f"  Dev EER:           {dev_eer:.3f}%")
@@ -246,7 +252,7 @@ def main(args: argparse.Namespace) -> None:
     epoch_pbar.close()
     
     print("\n" + "="*60)
-    print("FINAL EVALUATION")
+    print("🎯 FINAL EVALUATION")
     print("="*60)
     epoch += 1
     if n_swa_update > 0:
@@ -389,10 +395,11 @@ def produce_evaluation_file(
     # Use tqdm for evaluation progress - single bar, no nesting
     with torch.no_grad():
         pbar = tqdm(data_loader, 
-                   desc="  Evaluating", 
+                   desc="  🔍 Evaluating", 
                    leave=False,
                    mininterval=0.5,
-                   miniters=10)
+                   miniters=10,
+                   bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}')
         for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
@@ -429,11 +436,12 @@ def train_epoch(
     
     # Single progress bar for batches - use leave=False so it disappears after epoch
     pbar = tqdm(trn_loader, 
-                desc=f"  Training",
+                desc=f"  🏃 Training Epoch {epoch+1}",
                 leave=False,
                 dynamic_ncols=True,
                 mininterval=0.5,  # Update display at most every 0.5 seconds
-                miniters=10)  # Update at least every 10 iterations
+                miniters=10,  # Update at least every 10 iterations
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{rate_fmt}{postfix}]')
     
     for batch_idx, (batch_x, batch_y) in enumerate(pbar):
         batch_size = batch_x.size(0)
