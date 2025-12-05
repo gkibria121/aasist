@@ -142,13 +142,13 @@ def main(args: argparse.Namespace) -> None:
     print("STARTING TRAINING")
     print("="*60 + "\n")
     
-    # Main epoch progress bar
-    epoch_pbar = tqdm(range(config["num_epochs"]), desc="Training Progress", position=0)
+    # Main epoch progress bar - use tqdm directly
+    epoch_pbar = tqdm(range(config["num_epochs"]), desc="Training Progress")
     
     for epoch in epoch_pbar:
         epoch_start_time = time.time()
         
-        # Train for one epoch
+        # Train for one epoch - NO nested progress bar
         running_loss = train_epoch(trn_loader, model, optimizer, device,
                                    scheduler, config, epoch)
         
@@ -180,14 +180,14 @@ def main(args: argparse.Namespace) -> None:
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            tqdm.write(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)")
+            print(f"\n🎯 NEW BEST MODEL! EER: {dev_eer:.3f}% (previous: {best_dev_eer:.3f}%)")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # Do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
-                tqdm.write("Evaluating on eval set...")
+                print("Evaluating on eval set...")
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
                 eval_eer, eval_tdcf, eval_acc_eer, eval_acc_tdcf, eval_max_acc = calculate_tDCF_EER(
@@ -209,10 +209,10 @@ def main(args: argparse.Namespace) -> None:
                 log_text += f", acc@eer: {eval_acc_eer:.2f}%, acc@min-tDCF: {eval_acc_tdcf:.2f}%, max_acc: {eval_max_acc:.2f}%"
                 
                 if len(log_text) > 0:
-                    tqdm.write(log_text)
+                    print(log_text)
                     f_log.write(log_text + "\n")
 
-            tqdm.write(f"Saving epoch {epoch} for SWA")
+            print(f"Saving epoch {epoch} for SWA")
             optimizer_swa.update_swa()
             n_swa_update += 1
         
@@ -363,9 +363,7 @@ def produce_evaluation_file(
     score_list = []
     
     with torch.no_grad():
-        # Add progress bar for evaluation
-        pbar = tqdm(data_loader, desc="Evaluating", leave=False, position=1)
-        for batch_x, utt_id in pbar:
+        for batch_x, utt_id in data_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
@@ -388,7 +386,7 @@ def train_epoch(
     scheduler: torch.optim.lr_scheduler,
     config: argparse.Namespace,
     epoch: int):
-    """Train the model for one epoch"""
+    """Train the model for one epoch - NO PROGRESS BAR HERE!"""
     running_loss = 0
     num_total = 0.0
     model.train()
@@ -397,10 +395,8 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    # Add progress bar for training batches
-    pbar = tqdm(trn_loader, desc=f"Epoch {epoch+1}", leave=False, position=1)
-    
-    for batch_idx, (batch_x, batch_y) in enumerate(pbar):
+    # NO tqdm progress bar here - just a simple loop
+    for batch_idx, (batch_x, batch_y) in enumerate(trn_loader):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -421,10 +417,6 @@ def train_epoch(
             pass
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
-        
-        # Update progress bar with current loss
-        current_loss = running_loss / num_total
-        pbar.set_postfix({'loss': f'{current_loss:.4f}'})
     
     running_loss /= num_total
     
