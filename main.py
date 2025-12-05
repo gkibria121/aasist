@@ -30,11 +30,11 @@ from utils import create_optimizer, seed_worker, set_seed, str_to_bool
 
 # Add tqdm for progress bars - use notebook for better Jupyter/Colab visualization
 try:
-    from tqdm.notebook import tqdm
-    print("Using tqdm.notebook for enhanced progress bars")
+    from tqdm.notebook import tqdm, trange
+    print("✅ Using tqdm.notebook for enhanced progress bars")
 except ImportError:
-    from tqdm import tqdm
-    print("Using standard tqdm (notebook version not available)")
+    from tqdm import tqdm, trange
+    print("📝 Using standard tqdm (notebook version not available)")
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -150,13 +150,13 @@ def main(args: argparse.Namespace) -> None:
     print("="*60 + "\n")
     
     # Create master progress bar for epochs - use notebook style
-    epoch_pbar = tqdm(total=config["num_epochs"], 
+    epoch_pbar = trange(config["num_epochs"], 
                       desc="📊 Training Progress",
                       position=0,
                       leave=True,
                       bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]')
     
-    for epoch in range(config["num_epochs"]):
+    for epoch in epoch_pbar:
         epoch_start_time = time.time()
         
         # Update epoch progress bar description
@@ -241,7 +241,6 @@ def main(args: argparse.Namespace) -> None:
         writer.add_scalar("best_dev_tdcf", best_dev_tdcf, epoch)
         
         # Update epoch progress bar
-        epoch_pbar.update(1)
         epoch_pbar.set_postfix({
             'Loss': f'{running_loss:.4f}',
             'EER': f'{dev_eer:.3f}%',
@@ -373,7 +372,7 @@ def get_loader(
                              batch_size=config["batch_size"],
                              shuffle=False,
                              drop_last=False,
-                             pin_memory=True,
+                            pin_memory=True,
                              num_workers=0)
 
     return trn_loader, dev_loader, eval_loader
@@ -397,15 +396,16 @@ def produce_evaluation_file(
         pbar = tqdm(data_loader, 
                    desc="  🔍 Evaluating", 
                    leave=False,
-                   mininterval=0.5,
-                   miniters=10,
-                   bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt}')
+                   mininterval=0.1,
+                   miniters=5,
+                   bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{rate_fmt}]')
         for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
             fname_list.extend(utt_id)
             score_list.extend(batch_score.tolist())
+            pbar.update(1)
         pbar.close()
 
     assert len(trial_lines) == len(fname_list) == len(score_list)
@@ -435,15 +435,16 @@ def train_epoch(
     criterion = nn.CrossEntropyLoss(weight=weight)
     
     # Single progress bar for batches - use leave=False so it disappears after epoch
-    pbar = tqdm(trn_loader, 
+    pbar = tqdm(enumerate(trn_loader), 
+                total=len(trn_loader),
                 desc=f"  🏃 Training Epoch {epoch+1}",
                 leave=False,
                 dynamic_ncols=True,
-                mininterval=0.5,  # Update display at most every 0.5 seconds
-                miniters=10,  # Update at least every 10 iterations
+                mininterval=0.1,  # Update display more frequently
+                miniters=1,  # Update every iteration
                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{rate_fmt}{postfix}]')
     
-    for batch_idx, (batch_x, batch_y) in enumerate(pbar):
+    for batch_idx, (batch_x, batch_y) in pbar:
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -467,14 +468,13 @@ def train_epoch(
         # Calculate current average loss
         avg_loss = running_loss / num_total
         
-        # Update progress bar postfix - only update every 10 batches to reduce refresh
-        if batch_idx % 10 == 0 or batch_idx == len(trn_loader) - 1:
-            postfix_dict = {"Loss": f"{avg_loss:.4f}"}
-            if scheduler is not None and hasattr(scheduler, 'get_last_lr'):
-                current_lr = scheduler.get_last_lr()[0]
-                postfix_dict["LR"] = f"{current_lr:.2e}"
-            
-            pbar.set_postfix(postfix_dict, refresh=True)
+        # Update progress bar postfix every iteration
+        postfix_dict = {"Loss": f"{avg_loss:.4f}"}
+        if scheduler is not None and hasattr(scheduler, 'get_last_lr'):
+            current_lr = scheduler.get_last_lr()[0]
+            postfix_dict["LR"] = f"{current_lr:.2e}"
+        
+        pbar.set_postfix(postfix_dict, refresh=True)
     
     pbar.close()
     running_loss /= num_total
