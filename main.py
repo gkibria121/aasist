@@ -28,14 +28,6 @@ from data_utils import (Dataset_ASVspoof2019_train,
 from evaluation import calculate_tDCF_EER
 from utils import create_optimizer, seed_worker, set_seed, str_to_bool
 
-# Add tqdm for progress bars - use notebook for better Jupyter/Colab visualization
-try:
-    from tqdm.notebook import tqdm, trange
-    print("✅ Using tqdm.notebook for enhanced progress bars")
-except ImportError:
-    from tqdm import tqdm, trange
-    print("📝 Using standard tqdm (notebook version not available)")
-
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
@@ -149,20 +141,12 @@ def main(args: argparse.Namespace) -> None:
     print("STARTING TRAINING")
     print("="*60 + "\n")
     
-    # Create master progress bar for epochs - use notebook style
-    epoch_pbar = trange(config["num_epochs"], 
-                      desc="📊 Training Progress",
-                      position=0,
-                      leave=True,
-                      bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [ETA: {remaining}]')
-    
-    for epoch in epoch_pbar:
+    for epoch in range(config["num_epochs"]):
         epoch_start_time = time.time()
         
-        # Update epoch progress bar description
-        epoch_pbar.set_description(f"📊 Epoch {epoch+1}/{config['num_epochs']}")
+        print(f"📊 Epoch {epoch+1}/{config['num_epochs']}")
         
-        # Train for one epoch (this will show its own progress bar)
+        # Train for one epoch
         running_loss = train_epoch(trn_loader, model, optimizer, device,
                                    scheduler, config, epoch)
         
@@ -240,15 +224,8 @@ def main(args: argparse.Namespace) -> None:
         writer.add_scalar("best_dev_eer", best_dev_eer, epoch)
         writer.add_scalar("best_dev_tdcf", best_dev_tdcf, epoch)
         
-        # Update epoch progress bar
-        epoch_pbar.set_postfix({
-            'Loss': f'{running_loss:.4f}',
-            'EER': f'{dev_eer:.3f}%',
-            'Best': f'{best_dev_eer:.3f}%'
-        })
         print()  # Add spacing between epochs
 
-    epoch_pbar.close()
     
     print("\n" + "="*60)
     print("🎯 FINAL EVALUATION")
@@ -391,22 +368,13 @@ def produce_evaluation_file(
     fname_list = []
     score_list = []
     
-    # Use tqdm for evaluation progress - single bar, no nesting
     with torch.no_grad():
-        pbar = tqdm(data_loader, 
-                   desc="  🔍 Evaluating", 
-                   leave=False,
-                   mininterval=0.1,
-                   miniters=5,
-                   bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{rate_fmt}]')
-        for batch_x, utt_id in pbar:
+        for batch_x, utt_id in data_loader:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
             fname_list.extend(utt_id)
             score_list.extend(batch_score.tolist())
-            pbar.update(1)
-        pbar.close()
 
     assert len(trial_lines) == len(fname_list) == len(score_list)
     with open(save_path, "w") as fh:
@@ -434,17 +402,9 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    # Single progress bar for batches - use leave=False so it disappears after epoch
-    pbar = tqdm(enumerate(trn_loader), 
-                total=len(trn_loader),
-                desc=f"  🏃 Training Epoch {epoch+1}",
-                leave=False,
-                dynamic_ncols=True,
-                mininterval=0.1,  # Update display more frequently
-                miniters=1,  # Update every iteration
-                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{rate_fmt}{postfix}]')
+    print(f"  🏃 Training Epoch {epoch+1}...")
     
-    for batch_idx, (batch_x, batch_y) in pbar:
+    for batch_idx, (batch_x, batch_y) in enumerate(trn_loader):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
@@ -464,19 +424,7 @@ def train_epoch(
             pass
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
-        
-        # Calculate current average loss
-        avg_loss = running_loss / num_total
-        
-        # Update progress bar postfix every iteration
-        postfix_dict = {"Loss": f"{avg_loss:.4f}"}
-        if scheduler is not None and hasattr(scheduler, 'get_last_lr'):
-            current_lr = scheduler.get_last_lr()[0]
-            postfix_dict["LR"] = f"{current_lr:.2e}"
-        
-        pbar.set_postfix(postfix_dict, refresh=True)
     
-    pbar.close()
     running_loss /= num_total
     
     return running_loss
