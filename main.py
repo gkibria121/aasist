@@ -22,7 +22,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchcontrib.optim import SWA
-from tqdm  import tqdm
+from tqdm import tqdm
 
 from data_utils import (Dataset_ASVspoof2019_train,
                         Dataset_ASVspoof2019_devNeval, genSpoof_list)
@@ -146,27 +146,25 @@ def main(args: argparse.Namespace) -> None:
     print(f"Epochs: {config['num_epochs']}")
     print("="*60 + "\n")
     
-    # Create main epoch progress bar
-    epoch_pbar = tqdm(range(config["num_epochs"]), desc="📊 Overall Progress", unit="epoch")
-    
-    for epoch in epoch_pbar:
+    for epoch in range(config["num_epochs"]):
         epoch_start_time = time.time()
         
-        # Update epoch description
-        epoch_pbar.set_description(f"📊 Epoch {epoch+1}/{config['num_epochs']}")
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch+1}/{config['num_epochs']}")
+        print(f"{'='*60}")
         
         # ========== TRAIN PHASE ==========
-        epoch_pbar.write(f"\n🚀 Epoch {epoch+1}/{config['num_epochs']} - Training...")
+        print("\n🚀 Training...")
         train_start_time = time.time()
         running_loss = train_epoch(trn_loader, model, optimizer, device,
                                    scheduler, config, epoch)
         train_time = time.time() - train_start_time
         
-        epoch_pbar.write(f"   ✓ Training completed in {train_time:.1f}s")
-        epoch_pbar.write(f"   📊 Training Loss: {running_loss:.4f}")
+        print(f"   ✓ Training completed in {train_time:.1f}s")
+        print(f"   📊 Training Loss: {running_loss:.4f}")
         
         # ========== VALIDATION PHASE ==========
-        epoch_pbar.write(f"\n📊 Epoch {epoch+1}/{config['num_epochs']} - Validating...")
+        print("\n📊 Validating...")
         val_start_time = time.time()
         
         # Perform full validation
@@ -181,22 +179,14 @@ def main(args: argparse.Namespace) -> None:
         val_time = time.time() - val_start_time
         epoch_time = time.time() - epoch_start_time
         
-        epoch_pbar.write(f"   ✓ Validation completed in {val_time:.1f}s")
-        epoch_pbar.write(f"\n📈 Epoch {epoch+1} Summary:")
-        epoch_pbar.write(f"   EER:        {dev_eer:.3f}%")
-        epoch_pbar.write(f"   t-DCF:      {dev_tdcf:.5f}")
-        epoch_pbar.write(f"   Acc@EER:    {dev_acc_eer:.2f}%")
-        epoch_pbar.write(f"   Acc@t-DCF:  {dev_acc_tdcf:.2f}%")
-        epoch_pbar.write(f"   Max Acc:    {dev_max_acc:.2f}%")
-        epoch_pbar.write(f"   Total Time: {epoch_time:.1f}s")
-        
-        # Update progress bar postfix
-        epoch_pbar.set_postfix({
-            'Loss': f'{running_loss:.4f}',
-            'EER': f'{dev_eer:.2f}%',
-            't-DCF': f'{dev_tdcf:.4f}',
-            'Best EER': f'{best_dev_eer:.2f}%'
-        })
+        print(f"   ✓ Validation completed in {val_time:.1f}s")
+        print(f"\n📈 Epoch {epoch+1} Summary:")
+        print(f"   EER:        {dev_eer:.3f}%")
+        print(f"   t-DCF:      {dev_tdcf:.5f}")
+        print(f"   Acc@EER:    {dev_acc_eer:.2f}%")
+        print(f"   Acc@t-DCF:  {dev_acc_tdcf:.2f}%")
+        print(f"   Max Acc:    {dev_max_acc:.2f}%")
+        print(f"   Total Time: {epoch_time:.1f}s")
         
         writer.add_scalar("loss", running_loss, epoch)
         writer.add_scalar("dev_eer", dev_eer, epoch)
@@ -207,14 +197,14 @@ def main(args: argparse.Namespace) -> None:
 
         best_dev_tdcf = min(dev_tdcf, best_dev_tdcf)
         if best_dev_eer >= dev_eer:
-            epoch_pbar.write(f"\n🎯 NEW BEST MODEL! EER improved from {best_dev_eer:.3f}% to {dev_eer:.3f}%")
+            print(f"\n🎯 NEW BEST MODEL! EER improved from {best_dev_eer:.3f}% to {dev_eer:.3f}%")
             best_dev_eer = dev_eer
             torch.save(model.state_dict(),
                        model_save_path / "epoch_{}_{:03.3f}.pth".format(epoch, dev_eer))
 
             # Do evaluation whenever best model is renewed
             if str_to_bool(config["eval_all_best"]):
-                epoch_pbar.write("   🔍 Evaluating on eval set...")
+                print("   🔍 Evaluating on eval set...")
                 eval_start_time = time.time()
                 produce_evaluation_file(eval_loader, model, device,
                                         eval_score_path, eval_trial_path)
@@ -239,10 +229,10 @@ def main(args: argparse.Namespace) -> None:
                 log_text += f"\n   🎯 Acc@EER: {eval_acc_eer:.2f}%, Acc@min-tDCF: {eval_acc_tdcf:.2f}%, Max Acc: {eval_max_acc:.2f}%"
                 log_text += f"\n   ⏱️  Eval Time: {eval_time:.1f}s"
                 
-                epoch_pbar.write(log_text)
+                print(log_text)
                 f_log.write(f"epoch{epoch+1:03d}: {log_text}\n")
 
-            epoch_pbar.write(f"   💾 Saving epoch {epoch+1} for SWA")
+            print(f"   💾 Saving epoch {epoch+1} for SWA")
             optimizer_swa.update_swa()
             n_swa_update += 1
         
@@ -252,8 +242,6 @@ def main(args: argparse.Namespace) -> None:
         # Clear memory if needed
         if device == "cuda":
             torch.cuda.empty_cache()
-    
-    epoch_pbar.close()
     
     print("\n" + "="*60)
     print("🎯 FINAL EVALUATION")
@@ -295,12 +283,12 @@ def main(args: argparse.Namespace) -> None:
     print("\n" + "="*60)
     print("🎉 TRAINING COMPLETE!")
     print("="*60)
-    print(f"  🏆 Best EER:                    {best_eval_eer:.3f}%")
-    print(f"  🏆 Best t-DCF:                  {best_eval_tdcf:.5f}")
-    print(f"  📊 Final Accuracy @ EER:        {eval_acc_eer:.2f}%")
-    print(f"  📊 Final Accuracy @ min-tDCF:   {eval_acc_tdcf:.2f}%")
-    print(f"  📊 Final Maximum Accuracy:      {eval_max_acc:.2f}%")
-    print(f"  ⏱️  Total Training Time:         {total_time:.1f}s")
+    print(f"  Best EER:                    {best_eval_eer:.3f}%")
+    print(f"  Best t-DCF:                  {best_eval_tdcf:.5f}")
+    print(f"  Final Accuracy @ EER:        {eval_acc_eer:.2f}%")
+    print(f"  Final Accuracy @ min-tDCF:   {eval_acc_tdcf:.2f}%")
+    print(f"  Final Maximum Accuracy:      {eval_max_acc:.2f}%")
+    print(f"  Total Training Time:         {total_time:.1f}s")
     print("="*60 + "\n")
 
 
@@ -401,11 +389,11 @@ def produce_evaluation_file(
     fname_list = []
     score_list = []
     
-    # Notebook-style progress bar for evaluation
-    eval_pbar = tqdm(data_loader, desc="🔍 Evaluating", unit="batch", leave=False)
+    # Add progress bar for evaluation
+    pbar = tqdm(data_loader, desc="Evaluating", leave=False)
     
     with torch.no_grad():
-        for batch_x, utt_id in eval_pbar:
+        for batch_x, utt_id in pbar:
             batch_x = batch_x.to(device, non_blocking=True)
             _, batch_out = model(batch_x)
             batch_score = (batch_out[:, 1]).data.cpu().numpy().ravel()
@@ -413,7 +401,7 @@ def produce_evaluation_file(
             score_list.extend(batch_score.tolist())
             
             # Update progress
-            eval_pbar.set_postfix({'samples': len(fname_list)})
+            pbar.set_postfix({'samples': len(fname_list)})
 
     assert len(trial_lines) == len(fname_list) == len(score_list)
     with open(save_path, "w") as fh:
@@ -431,7 +419,7 @@ def train_epoch(
     scheduler: torch.optim.lr_scheduler,
     config: argparse.Namespace,
     epoch: int):
-    """Train the model for one epoch with notebook-style progress bar"""
+    """Train the model for one epoch with progress bar"""
     running_loss = 0
     num_total = 0.0
     model.train()
@@ -440,8 +428,8 @@ def train_epoch(
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    # Notebook-style training progress bar
-    train_pbar = tqdm(trn_loader, desc=f"🚀 Training (Epoch {epoch+1})", unit="batch", leave=False)
+    # Training progress bar
+    train_pbar = tqdm(trn_loader, desc="Training", leave=False)
     
     for batch_idx, (batch_x, batch_y) in enumerate(train_pbar):
         batch_size = batch_x.size(0)
@@ -465,14 +453,11 @@ def train_epoch(
         else:
             raise ValueError("scheduler error, got:{}".format(scheduler))
         
-        # Update progress bar with rich information
+        # Update progress bar
         current_loss = running_loss / num_total
-        current_lr = optim.param_groups[0].get("lr", 0)
-        
         train_pbar.set_postfix({
             'loss': f'{current_loss:.4f}',
-            'lr': f'{current_lr:.6f}' if current_lr > 0 else 'N/A',
-            'batch': f'{batch_idx+1}/{len(trn_loader)}'
+            'lr': f'{optim.param_groups[0]["lr"]:.6f}' if optim.param_groups[0].get("lr") else 'N/A'
         })
     
     running_loss /= num_total
@@ -491,7 +476,7 @@ if __name__ == "__main__":
         "--output_dir",
         dest="output_dir",
         type=str,
-                        help="output directory for results",
+        help="output directory for results",
         default="./exp_result",
     )
     parser.add_argument("--seed",
