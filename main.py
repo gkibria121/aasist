@@ -91,11 +91,7 @@ def main(args: argparse.Namespace) -> None:
     # These optimizations do NOT change numerical results
     print("\n" + "="*60)
     print("SAFE OPTIMIZATIONS ENABLED:")
-    print("="*60)
-    
-    # Enable cuDNN autotuner - finds fastest convolution algorithms
-    torch.backends.cudnn.benchmark = True 
-    torch.backends.cudnn.deterministic = False
+    print("="*60) 
     print("="*60 + "\n")
     # ============================================================
 
