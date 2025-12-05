@@ -16,6 +16,12 @@ from pathlib import Path
 from shutil import copy
 from typing import Dict, List, Union
 import time
+import numpy as np
+from collections import Counter, defaultdict
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy import stats
 
 import torch
 import torch.nn as nn
@@ -30,6 +36,461 @@ from evaluation import calculate_tDCF_EER
 from utils import create_optimizer, seed_worker, set_seed, str_to_bool
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+
+def analyze_database(config: Dict, database_path: Path, track: str) -> None:
+    """
+    Comprehensive database analysis function.
+    Analyzes dataset statistics, class distributions, augmentation details, etc.
+    """
+    print("\n" + "="*80)
+    print("DATABASE COMPREHENSIVE ANALYSIS")
+    print("="*80)
+    
+    prefix_2019 = "ASVspoof2019.{}".format(track)
+    
+    # Define all protocol file paths
+    protocol_files = {
+        'train': database_path / f"ASVspoof2019_{track}_cm_protocols/{prefix_2019}.cm.train.trn.txt",
+        'dev': database_path / f"ASVspoof2019_{track}_cm_protocols/{prefix_2019}.cm.dev.trl.txt",
+        'eval': database_path / f"ASVspoof2019_{track}_cm_protocols/{prefix_2019}.cm.eval.trl.txt"
+    }
+    
+    # Define audio directories
+    audio_dirs = {
+        'train': database_path / f"ASVspoof2019_{track}_train/",
+        'dev': database_path / f"ASVspoof2019_{track}_dev/",
+        'eval': database_path / f"ASVspoof2019_{track}_eval/"
+    }
+    
+    # Check if directories exist
+    print("\n📁 DATABASE STRUCTURE ANALYSIS:")
+    print("-" * 50)
+    for name, path in audio_dirs.items():
+        exists = "✅" if path.exists() else "❌"
+        print(f"{exists} {name}: {path}")
+        if path.exists():
+            try:
+                num_files = len(list(path.rglob("*.flac"))) + len(list(path.rglob("*.wav")))
+                print(f"   Audio files: {num_files}")
+            except:
+                print("   Unable to count files")
+    
+    print("\n📄 PROTOCOL FILES:")
+    print("-" * 50)
+    for name, path in protocol_files.items():
+        exists = "✅" if path.exists() else "❌"
+        print(f"{exists} {name}: {path}")
+    
+    # Analyze each split
+    print("\n📊 DATASET STATISTICS BY SPLIT:")
+    print("-" * 50)
+    
+    all_stats = {}
+    for split_name, protocol_path in protocol_files.items():
+        if not protocol_path.exists():
+            print(f"⚠️  Missing {split_name} protocol file: {protocol_path}")
+            continue
+            
+        print(f"\n🔍 Analyzing {split_name.upper()} set:")
+        print("-" * 30)
+        
+        # Parse protocol file
+        stats_dict = analyze_protocol_file(protocol_path, split_name, track)
+        
+        # Check audio file existence and get durations if possible
+        if split_name in audio_dirs and audio_dirs[split_name].exists():
+            audio_stats = analyze_audio_files(audio_dirs[split_name], stats_dict['utterances'])
+            stats_dict.update(audio_stats)
+        
+        all_stats[split_name] = stats_dict
+        
+        # Print summary
+        print(f"   Total samples: {stats_dict['total_samples']}")
+        print(f"   Bonafide samples: {stats_dict['bonafide_count']} ({stats_dict['bonafide_percentage']:.1f}%)")
+        print(f"   Spoof samples: {stats_dict['spoof_count']} ({stats_dict['spoof_percentage']:.1f}%)")
+        
+        if 'spoof_attacks' in stats_dict:
+            print(f"   Spoof attack types: {len(stats_dict['spoof_attacks'])}")
+            print("   Attack type distribution:")
+            for attack_type, count in stats_dict['spoof_attacks'].most_common(5):
+                print(f"      {attack_type}: {count} samples")
+        
+        if 'audio_duration_stats' in stats_dict:
+            dur_stats = stats_dict['audio_duration_stats']
+            print(f"   Audio duration (estimated):")
+            print(f"      Min: {dur_stats['min']:.2f}s")
+            print(f"      Max: {dur_stats['max']:.2f}s")
+            print(f"      Mean: {dur_stats['mean']:.2f}s")
+            print(f"      Std: {dur_stats['std']:.2f}s")
+        
+        if stats_dict['missing_files'] > 0:
+            print(f"   ⚠️  Missing audio files: {stats_dict['missing_files']}")
+    
+    # Cross-set analysis
+    print("\n🔗 CROSS-SET ANALYSIS:")
+    print("-" * 50)
+    
+    # Check for overlap between sets
+    if all(set_name in all_stats for set_name in ['train', 'dev', 'eval']):
+        train_speakers = set(all_stats['train']['speakers'])
+        dev_speakers = set(all_stats['dev']['speakers'])
+        eval_speakers = set(all_stats['eval']['speakers'])
+        
+        train_dev_overlap = train_speakers.intersection(dev_speakers)
+        train_eval_overlap = train_speakers.intersection(eval_speakers)
+        dev_eval_overlap = dev_speakers.intersection(eval_speakers)
+        
+        print(f"Speaker overlap analysis:")
+        print(f"   Train-Dev overlap: {len(train_dev_overlap)} speakers")
+        print(f"   Train-Eval overlap: {len(train_eval_overlap)} speakers")
+        print(f"   Dev-Eval overlap: {len(dev_eval_overlap)} speakers")
+        
+        if len(train_eval_overlap) > 0:
+            print(f"   ⚠️  WARNING: {len(train_eval_overlap)} speakers appear in both train and eval sets!")
+    
+    # Configuration analysis
+    print("\n⚙️  CONFIGURATION ANALYSIS:")
+    print("-" * 50)
+    print(f"Track: {track}")
+    print(f"Batch size: {config.get('batch_size', 'Not specified')}")
+    print(f"Number of epochs: {config.get('num_epochs', 'Not specified')}")
+    
+    # Augmentation analysis
+    print("\n🔄 AUGMENTATION ANALYSIS:")
+    print("-" * 50)
+    freq_aug = str_to_bool(config.get("freq_aug", "False"))
+    print(f"Frequency augmentation: {'✅ Enabled' if freq_aug else '❌ Disabled'}")
+    
+    if 'model_config' in config:
+        print(f"Model architecture: {config['model_config'].get('architecture', 'Not specified')}")
+        if 'specaug' in config['model_config']:
+            specaug = config['model_config']['specaug']
+            print(f"SpecAugment: ✅ Enabled")
+            if isinstance(specaug, dict):
+                for key, value in specaug.items():
+                    print(f"   {key}: {value}")
+    
+    # Class imbalance analysis
+    print("\n⚖️  CLASS IMBALANCE ANALYSIS:")
+    print("-" * 50)
+    
+    total_bonafide = sum(stats['bonafide_count'] for stats in all_stats.values())
+    total_spoof = sum(stats['spoof_count'] for stats in all_stats.values())
+    total_samples = total_bonafide + total_spoof
+    
+    if total_samples > 0:
+        print(f"Overall dataset:")
+        print(f"   Bonafide: {total_bonafide} ({total_bonafide/total_samples*100:.1f}%)")
+        print(f"   Spoof: {total_spoof} ({total_spoof/total_samples*100:.1f}%)")
+        
+        imbalance_ratio = max(total_bonafide, total_spoof) / min(total_bonafide, total_spoof)
+        print(f"   Class imbalance ratio: {imbalance_ratio:.2f}:1")
+        
+        if imbalance_ratio > 2:
+            print(f"   ⚠️  Significant class imbalance detected!")
+    
+    # Training set specific analysis
+    if 'train' in all_stats:
+        train_stats = all_stats['train']
+        print(f"\n📚 TRAINING SET DETAILS:")
+        print("-" * 50)
+        
+        if 'utterance_lengths' in train_stats and len(train_stats['utterance_lengths']) > 0:
+            lengths = train_stats['utterance_lengths']
+            print(f"Utterance length statistics:")
+            print(f"   Min: {min(lengths):.2f}s")
+            print(f"   Max: {max(lengths):.2f}s")
+            print(f"   Mean: {np.mean(lengths):.2f}s")
+            print(f"   Median: {np.median(lengths):.2f}s")
+            
+            # Check for very short/long utterances
+            short_threshold = 1.0  # seconds
+            long_threshold = 10.0  # seconds
+            
+            short_utts = [l for l in lengths if l < short_threshold]
+            long_utts = [l for l in lengths if l > long_threshold]
+            
+            if short_utts:
+                print(f"   ⚠️  {len(short_utts)} utterances shorter than {short_threshold}s")
+            if long_utts:
+                print(f"   ⚠️  {len(long_utts)} utterances longer than {long_threshold}s")
+    
+    # Generate visualizations if matplotlib is available
+    try:
+        print("\n📈 GENERATING VISUALIZATIONS...")
+        generate_visualizations(all_stats, track)
+        print("✅ Visualizations saved to 'database_analysis' folder")
+    except Exception as e:
+        print(f"⚠️  Could not generate visualizations: {e}")
+    
+    # Recommendations
+    print("\n💡 RECOMMENDATIONS:")
+    print("-" * 50)
+    
+    recommendations = []
+    
+    # Check class balance
+    if 'train' in all_stats:
+        train_imbalance = all_stats['train']['bonafide_count'] / max(all_stats['train']['spoof_count'], 1)
+        if train_imbalance > 2 or train_imbalance < 0.5:
+            recommendations.append("Consider using class weights in loss function due to class imbalance")
+    
+    # Check dataset sizes
+    if 'train' in all_stats and 'dev' in all_stats:
+        train_size = all_stats['train']['total_samples']
+        dev_size = all_stats['dev']['total_samples']
+        if dev_size / train_size < 0.1:
+            recommendations.append(f"Development set is small ({dev_size/train_size*100:.1f}% of training). Consider using cross-validation.")
+    
+    # Check augmentation
+    if not freq_aug:
+        recommendations.append("Consider enabling frequency augmentation for better generalization")
+    
+    if not recommendations:
+        recommendations.append("Dataset looks well-balanced and configured for training.")
+    
+    for i, rec in enumerate(recommendations, 1):
+        print(f"{i}. {rec}")
+    
+    print("\n" + "="*80)
+    print("ANALYSIS COMPLETE")
+    print("="*80)
+
+
+def analyze_protocol_file(protocol_path: Path, split_name: str, track: str) -> Dict:
+    """Analyze a protocol file and extract statistics."""
+    stats = {
+        'total_samples': 0,
+        'bonafide_count': 0,
+        'spoof_count': 0,
+        'speakers': [],
+        'utterances': [],
+        'spoof_attacks': Counter(),
+        'bonafide_percentage': 0,
+        'spoof_percentage': 0,
+        'missing_files': 0
+    }
+    
+    with open(protocol_path, 'r') as f:
+        lines = f.readlines()
+    
+    stats['total_samples'] = len(lines)
+    
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) >= 5:
+            # Format: speaker utterance - - label
+            speaker_id = parts[0]
+            utterance_id = parts[1]
+            label = parts[4]
+            
+            stats['speakers'].append(speaker_id)
+            stats['utterances'].append(utterance_id)
+            
+            if label == 'bonafide':
+                stats['bonafide_count'] += 1
+            else:
+                stats['spoof_count'] += 1
+                # Extract attack type (for LA track)
+                if track == 'LA' and '-' in utterance_id:
+                    attack_type = utterance_id.split('-')[1]
+                    stats['spoof_attacks'][attack_type] += 1
+                elif track == 'PA':
+                    # PA track attack types
+                    if 'replay' in label.lower():
+                        stats['spoof_attacks']['replay'] += 1
+    
+    if stats['total_samples'] > 0:
+        stats['bonafide_percentage'] = (stats['bonafide_count'] / stats['total_samples']) * 100
+        stats['spoof_percentage'] = (stats['spoof_count'] / stats['total_samples']) * 100
+    
+    stats['speakers'] = list(set(stats['speakers']))
+    
+    return stats
+
+
+def analyze_audio_files(audio_dir: Path, utterance_ids: List[str]) -> Dict:
+    """Analyze audio files and extract duration information."""
+    import librosa
+    
+    stats = {
+        'audio_duration_stats': None,
+        'sample_rates': set(),
+        'utterance_lengths': [],
+        'missing_files': 0
+    }
+    
+    durations = []
+    
+    # Check first N files to get statistics
+    max_files_to_check = min(100, len(utterance_ids))
+    sample_utterances = utterance_ids[:max_files_to_check]
+    
+    for utt_id in tqdm(sample_utterances, desc=f"Checking audio files", leave=False):
+        # Try different file extensions
+        audio_file = None
+        for ext in ['.flac', '.wav']:
+            potential_file = audio_dir / f"{utt_id}{ext}"
+            if potential_file.exists():
+                audio_file = potential_file
+                break
+        
+        if audio_file and audio_file.exists():
+            try:
+                # Load audio to get duration
+                y, sr = librosa.load(audio_file, sr=None, mono=True, duration=30)
+                duration = librosa.get_duration(y=y, sr=sr)
+                durations.append(duration)
+                stats['sample_rates'].add(sr)
+                stats['utterance_lengths'].append(duration)
+            except Exception as e:
+                print(f"   ⚠️  Could not load {audio_file}: {e}")
+        else:
+            stats['missing_files'] += 1
+    
+    if durations:
+        stats['audio_duration_stats'] = {
+            'min': min(durations),
+            'max': max(durations),
+            'mean': np.mean(durations),
+            'std': np.std(durations),
+            'median': np.median(durations)
+        }
+    
+    return stats
+
+
+def generate_visualizations(all_stats: Dict, track: str) -> None:
+    """Generate visualization plots for dataset analysis."""
+    output_dir = Path("database_analysis")
+    output_dir.mkdir(exist_ok=True)
+    
+    # 1. Class distribution across splits
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    for idx, (split_name, stats) in enumerate(all_stats.items()):
+        if 'bonafide_count' in stats and 'spoof_count' in stats:
+            ax = axes[idx]
+            labels = ['Bonafide', 'Spoof']
+            counts = [stats['bonafide_count'], stats['spoof_count']]
+            
+            bars = ax.bar(labels, counts, color=['green', 'red'])
+            ax.set_title(f'{split_name.upper()} Set Class Distribution')
+            ax.set_ylabel('Number of Samples')
+            ax.set_xlabel('Class')
+            
+            # Add count labels on bars
+            for bar, count in zip(bars, counts):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{count}\n({count/sum(counts)*100:.1f}%)',
+                       ha='center', va='bottom')
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / f'{track}_class_distribution.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # 2. Attack type distribution (for LA track)
+    if track == 'LA' and 'train' in all_stats:
+        train_stats = all_stats['train']
+        if 'spoof_attacks' in train_stats and train_stats['spoof_attacks']:
+            attack_types = list(train_stats['spoof_attacks'].keys())
+            attack_counts = list(train_stats['spoof_attacks'].values())
+            
+            plt.figure(figsize=(12, 6))
+            bars = plt.barh(attack_types, attack_counts, color='steelblue')
+            plt.xlabel('Number of Samples')
+            plt.title(f'{track} Track - Spoof Attack Type Distribution (Train Set)')
+            plt.gca().invert_yaxis()  # Highest count on top
+            
+            # Add count labels
+            for bar, count in zip(bars, attack_counts):
+                plt.text(count + max(attack_counts)*0.01, bar.get_y() + bar.get_height()/2,
+                        str(count), va='center')
+            
+            plt.tight_layout()
+            plt.savefig(output_dir / f'{track}_attack_distribution.png', dpi=150, bbox_inches='tight')
+            plt.close()
+    
+    # 3. Duration distribution if available
+    if 'train' in all_stats and 'utterance_lengths' in all_stats['train']:
+        durations = all_stats['train']['utterance_lengths']
+        if durations:
+            plt.figure(figsize=(10, 6))
+            plt.hist(durations, bins=50, alpha=0.7, color='purple', edgecolor='black')
+            plt.xlabel('Duration (seconds)')
+            plt.ylabel('Frequency')
+            plt.title(f'{track} Track - Utterance Duration Distribution (Train Set)')
+            
+            # Add statistics text
+            stats_text = (f'Mean: {np.mean(durations):.2f}s\n'
+                         f'Std: {np.std(durations):.2f}s\n'
+                         f'Min: {min(durations):.2f}s\n'
+                         f'Max: {max(durations):.2f}s\n'
+                         f'N: {len(durations)} samples')
+            plt.text(0.95, 0.95, stats_text,
+                    transform=plt.gca().transAxes,
+                    verticalalignment='top',
+                    horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            
+            plt.tight_layout()
+            plt.savefig(output_dir / f'{track}_duration_distribution.png', dpi=150, bbox_inches='tight')
+            plt.close()
+    
+    # 4. Save detailed statistics to CSV
+    csv_data = []
+    for split_name, stats in all_stats.items():
+        row = {
+            'split': split_name,
+            'total_samples': stats.get('total_samples', 0),
+            'bonafide_count': stats.get('bonafide_count', 0),
+            'spoof_count': stats.get('spoof_count', 0),
+            'bonafide_percentage': stats.get('bonafide_percentage', 0),
+            'spoof_percentage': stats.get('spoof_percentage', 0),
+            'unique_speakers': len(stats.get('speakers', [])),
+            'missing_files': stats.get('missing_files', 0)
+        }
+        
+        # Add duration stats if available
+        if 'audio_duration_stats' in stats and stats['audio_duration_stats']:
+            dur_stats = stats['audio_duration_stats']
+            row.update({
+                'duration_min': dur_stats.get('min', 0),
+                'duration_max': dur_stats.get('max', 0),
+                'duration_mean': dur_stats.get('mean', 0),
+                'duration_std': dur_stats.get('std', 0),
+                'duration_median': dur_stats.get('median', 0)
+            })
+        
+        csv_data.append(row)
+    
+    df = pd.DataFrame(csv_data)
+    df.to_csv(output_dir / f'{track}_dataset_statistics.csv', index=False)
+    
+    # Create a summary text file
+    with open(output_dir / f'{track}_analysis_summary.txt', 'w') as f:
+        f.write(f"ASVspoof2019 {track} Track Database Analysis\n")
+        f.write("=" * 50 + "\n\n")
+        
+        for split_name, stats in all_stats.items():
+            f.write(f"{split_name.upper()} SET:\n")
+            f.write(f"  Total samples: {stats.get('total_samples', 0)}\n")
+            f.write(f"  Bonafide: {stats.get('bonafide_count', 0)} ({stats.get('bonafide_percentage', 0):.1f}%)\n")
+            f.write(f"  Spoof: {stats.get('spoof_count', 0)} ({stats.get('spoof_percentage', 0):.1f}%)\n")
+            f.write(f"  Unique speakers: {len(stats.get('speakers', []))}\n")
+            f.write(f"  Missing audio files: {stats.get('missing_files', 0)}\n")
+            
+            if 'audio_duration_stats' in stats:
+                dur_stats = stats['audio_duration_stats']
+                f.write("  Duration statistics:\n")
+                f.write(f"    Min: {dur_stats.get('min', 0):.2f}s\n")
+                f.write(f"    Max: {dur_stats.get('max', 0):.2f}s\n")
+                f.write(f"    Mean: {dur_stats.get('mean', 0):.2f}s\n")
+                f.write(f"    Std: {dur_stats.get('std', 0):.2f}s\n")
+            
+            f.write("\n")
 
 
 def main(args: argparse.Namespace) -> None:
@@ -60,6 +521,17 @@ def main(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     prefix_2019 = "ASVspoof2019.{}".format(track)
     database_path = Path(config["database_path"])
+    
+    # ========== DATABASE ANALYSIS FLAG ==========
+    if args.analyze_db:
+        analyze_database(config, database_path, track)
+        if not args.train_after_analysis:
+            print("\nDatabase analysis completed. Exiting.")
+            sys.exit(0)
+        else:
+            print("\nProceeding with training after analysis...\n")
+    # ===========================================
+    
     dev_trial_path = (database_path /
                       "ASVspoof2019_{}_cm_protocols/{}.cm.dev.trl.txt".format(
                           track, prefix_2019))
@@ -495,4 +967,14 @@ if __name__ == "__main__":
                         type=str,
                         default=None,
                         help="directory to the model weight file (can be also given in the config file)")
+    
+    # ========== NEW FLAG: DATABASE ANALYSIS ==========
+    parser.add_argument("--analyze_db",
+                        action="store_true",
+                        help="comprehensive database analysis before training")
+    parser.add_argument("--train_after_analysis",
+                        action="store_true",
+                        help="continue training after database analysis")
+    # =================================================
+    
     main(parser.parse_args())
