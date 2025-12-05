@@ -29,7 +29,7 @@ from evaluation import calculate_tDCF_EER
 from utils import create_optimizer, seed_worker, set_seed, str_to_bool
 
 # Add tqdm for progress bars
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
