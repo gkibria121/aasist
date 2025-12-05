@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SimpleCNN(nn.Module):
+class Model(nn.Module):
     def __init__(self, num_classes=10, input_channels=3):
         """
         Simple CNN for image classification
@@ -12,7 +12,7 @@ class SimpleCNN(nn.Module):
             num_classes: Number of output classes
             input_channels: Number of input channels (3 for RGB, 1 for grayscale)
         """
-        super(SimpleCNN, self).__init__()
+        super(Model, self).__init__()
         
         # Convolutional layers
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
